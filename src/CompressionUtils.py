@@ -2,15 +2,9 @@ import os
 import tempfile
 from PIL import Image
 import mimetypes
+from src.constants import *
 
 class CompressionUtils:
-    # Default thumbnail height (can be modified)
-    THUMBNAIL_HEIGHT = 512
-    
-    # Supported image types for compression
-    SUPPORTED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp"]
-    SUPPORTED_MIMETYPES = ["image/jpeg", "image/png", "image/bmp", "image/tiff", "image/gif", "image/webp"]
-    
     @classmethod
     def is_supported_image(cls, content_type=None, file_name=None):
         """Check if the file is a supported image type.
@@ -20,12 +14,12 @@ class CompressionUtils:
         Returns:
             Boolean indicating if the file is a supported image
         """
-        if content_type and content_type in cls.SUPPORTED_MIMETYPES:
+        if content_type and content_type in SUPPORTED_IMAGE_MIMETYPES:
             return True
             
         if file_name:
             ext = os.path.splitext(file_name.lower())[1]
-            return ext in cls.SUPPORTED_EXTENSIONS
+            return ext in SUPPORTED_IMAGE_EXTENSIONS
             
         return False
     
@@ -39,7 +33,7 @@ class CompressionUtils:
             Path to the compressed image file
         """
         if height is None:
-            height = cls.THUMBNAIL_HEIGHT
+            height = THUMBNAIL_HEIGHT
             
         try:
             # Open the image
@@ -85,10 +79,10 @@ class CompressionUtils:
             img = img.resize((new_width, resize_height), Image.LANCZOS)
             
             # Save as WebP
-            _, output_file = tempfile.mkstemp(suffix=".webp")
+            _, output_file = tempfile.mkstemp(suffix=f".{IMAGE_OUTPUT_FORMAT}")
             
-            # WebP format with maximum quality for transparency support
-            img.save(output_file, "WEBP", quality=90, method=6)
+            # WebP format with quality settings from constants
+            img.save(output_file, "WEBP", quality=IMAGE_OUTPUT_QUALITY, method=IMAGE_OUTPUT_METHOD)
             
             # Close the image after we're done
             img.close()
@@ -96,11 +90,13 @@ class CompressionUtils:
             return output_file
         except Exception as e:
             raise Exception(f"Error compressing image: {str(e)}")
-    
+            
     @classmethod
     def set_thumbnail_height(cls, height):
         """Set the thumbnail height globally.
         Args:
             height: New thumbnail height
         """
-        cls.THUMBNAIL_HEIGHT = height
+        # This updates the global constant
+        global THUMBNAIL_HEIGHT
+        THUMBNAIL_HEIGHT = height

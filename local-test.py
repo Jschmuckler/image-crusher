@@ -13,7 +13,7 @@ import sys
 
 def main():
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description='Test the image compression Cloud Function locally')
+    parser = argparse.ArgumentParser(description='Test the file processing Cloud Function locally')
     parser.add_argument('--file-path', type=str, required=True, help='Path to the file in the bucket')
     parser.add_argument('--content-type', type=str, default='image/jpeg', help='Content type of the file')
     parser.add_argument('--port', type=int, default=8080, help='Port where the function is running')

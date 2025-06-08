@@ -1,0 +1,43 @@
+# Use official Python slim image (smaller than standard)
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    # FFmpeg with minimal dependencies
+    ffmpeg \
+    # For downloading static binaries if needed
+    wget \
+    # For any additional image processing
+    libjpeg-dev \
+    libpng-dev \
+    # Clean up to reduce image size
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+RUN ffmpeg -version
+
+# Set up Functions Framework
+ENV FUNCTION_TARGET=process
+ENV PORT=8080
+
+# Run the function directly
+CMD ["functions-framework", "--target=process", "--port=8080"]

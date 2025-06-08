@@ -12,9 +12,9 @@ import sys
 
 def main():
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description='Bulk process images in a folder')
+    parser = argparse.ArgumentParser(description='Bulk process files in a folder')
     parser.add_argument('--folder', type=str, help='Folder path to process (e.g., "2024/Photos")')
-    parser.add_argument('--height', type=int, help='Thumbnail height (default: 256)')
+    parser.add_argument('--height', type=int, help='Output height for processed files (default: 256)')
     parser.add_argument('--no-recursive', action='store_true', help='Do not process subfolders')
     parser.add_argument('--port', type=int, default=8080, help='Port where the function is running')
     args = parser.parse_args()

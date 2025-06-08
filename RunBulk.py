@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-RunBulk.py - Process a folder in the bucket and create thumbnails for all images.
+RunBulk.py - Process a folder in the bucket and create processed versions of files.
 This script can be run directly or imported and used by main.py.
 """
 
@@ -11,6 +11,7 @@ import tempfile
 import concurrent.futures
 from google.cloud import storage
 from src.CompressionUtils import CompressionUtils
+from src.FileProcessor import FileProcessor
 
 # Number of worker threads for parallel processing
 MAX_WORKERS = 10
@@ -107,28 +108,32 @@ def should_process_file(blob):
     if "/THUMBS/" in blob.name or "/thumbs/" in blob.name:
         return False
     
-    # Only process supported image types
-    if not CompressionUtils.is_supported_image(content_type=blob.content_type, file_name=blob.name):
+    # Check if the file type is supported
+    file_type = FileProcessor.get_file_type(content_type=blob.content_type, file_name=blob.name)
+    if file_type == FileProcessor.TYPE_UNKNOWN:
         return False
     
     return True
 
 def get_thumb_path(blob_path):
-    """Generate the thumbnail path for a blob.
+    """Generate the output path for a processed file.
     
     Args:
         blob_path: The path to the original blob
     
     Returns:
-        The path where the thumbnail should be stored
+        The path where the processed file should be stored
     """
+    # Get the base directory and filename
     directory = os.path.dirname(blob_path)
     basename = os.path.basename(blob_path)
     name_without_ext = os.path.splitext(basename)[0]
+    
+    # All processed files are WebP images
     return os.path.join(directory, "THUMBS", f"{name_without_ext}.webp")
 
-def thumbnail_exists(storage_client, bucket_name, original_path):
-    """Check if a thumbnail exists for the original file.
+def processed_file_exists(storage_client, bucket_name, original_path):
+    """Check if a processed file exists for the original file.
     
     Args:
         storage_client: The storage client
@@ -136,22 +141,22 @@ def thumbnail_exists(storage_client, bucket_name, original_path):
         original_path: Path to the original file
     
     Returns:
-        True if the thumbnail exists, False otherwise
+        True if the processed file exists, False otherwise
     """
     bucket = storage_client.bucket(bucket_name)
-    thumb_path = get_thumb_path(original_path)
-    thumb_blob = bucket.blob(thumb_path)
-    return thumb_blob.exists()
+    output_path = get_thumb_path(original_path)
+    output_blob = bucket.blob(output_path)
+    return output_blob.exists()
 
 def process_single_file(storage_client, bucket_name, blob_name, content_type=None, height=None):
-    """Process a single file to create a thumbnail.
+    """Process a single file.
     
     Args:
         storage_client: The storage client
         bucket_name: Name of the bucket
         blob_name: Name of the blob to process
         content_type: Content type of the blob (optional)
-        height: Thumbnail height (optional)
+        height: Output height (optional)
     
     Returns:
         True if successful, False otherwise
@@ -165,38 +170,61 @@ def process_single_file(storage_client, bucket_name, blob_name, content_type=Non
             blob.reload()  # Get latest metadata
             content_type = blob.content_type
         
-        # Download the image to a temporary file
-        _, temp_local_filename = tempfile.mkstemp()
-        blob.download_to_filename(temp_local_filename)
+        # Create file info dictionary
+        file_info = {
+            'name': blob_name,
+            'content_type': content_type
+        }
         
-        # Create the thumbnail path
+        # Process options
+        options = {}
+        if height is not None:
+            options['height'] = height
+            
+        # Process the file with FileProcessor
+        process_result = FileProcessor.process(
+            file_info=file_info,
+            storage_client=storage_client, 
+            bucket=bucket,
+            options=options
+        )
+        
+        # Get the processed file and info
+        processed_file = process_result['output_file']
+        output_extension = process_result['extension']
+        output_type = process_result['output_type']
+        temp_input_file = process_result.get('temp_input_file')
+        
+        # Create the output path
         file_dir = os.path.dirname(blob_name)
         thumb_dir = os.path.join(file_dir, "THUMBS")
         file_basename = os.path.basename(blob_name)
         file_name_without_ext = os.path.splitext(file_basename)[0]
-        thumb_path = os.path.join(thumb_dir, f"{file_name_without_ext}.webp")
+        output_path = os.path.join(thumb_dir, f"{file_name_without_ext}{output_extension}")
         
-        # Make sure THUMBS directory exists (to handle .exists() checks later)
+        # Make sure THUMBS directory exists
         thumbs_dir_blob = bucket.blob(f"{file_dir}/THUMBS/")
         if not thumbs_dir_blob.exists():
             thumbs_dir_blob.upload_from_string('')
         
-        # Create the compressed image
-        compressed_file = CompressionUtils.compress_image(temp_local_filename, height)
-        
-        # Upload the thumbnail
-        thumb_blob = bucket.blob(thumb_path)
-        thumb_blob.upload_from_filename(compressed_file)
-        thumb_blob.content_type = "image/webp"
+        # Upload the processed file
+        thumb_blob = bucket.blob(output_path)
+        thumb_blob.upload_from_filename(processed_file)
+        thumb_blob.content_type = output_type
         thumb_blob.patch()
         
         # Clean up temporary files
-        os.remove(temp_local_filename)
-        os.remove(compressed_file)
+        os.remove(processed_file)
+        if temp_input_file:
+            os.remove(temp_input_file)
         
-        print(f"✅ Created thumbnail: {thumb_path}")
+        print(f"✅ Created processed file: {output_path}")
         return True
         
+    except NotImplementedError as e:
+        # Handle case where processing for this file type is not yet implemented
+        print(f"⚠️ Skipping {blob_name}: {str(e)}")
+        return False
     except Exception as e:
         print(f"❌ Error processing {blob_name}: {str(e)}")
         return False
@@ -208,7 +236,7 @@ def process_files_in_parallel(storage_client, bucket_name, blobs, height=None):
         storage_client: The storage client
         bucket_name: Name of the bucket
         blobs: List of blob objects to process
-        height: Thumbnail height (optional)
+        height: Output height for processed files (optional)
     
     Returns:
         Tuple of (success_count, fail_count)
@@ -218,9 +246,9 @@ def process_files_in_parallel(storage_client, bucket_name, blobs, height=None):
     
     # Define function for parallel execution
     def process_blob(blob):
-        # Skip if thumbnail already exists
-        if thumbnail_exists(storage_client, bucket_name, blob.name):
-            print(f"⏭️ Thumbnail already exists for {blob.name}")
+        # Skip if processed file already exists
+        if processed_file_exists(storage_client, bucket_name, blob.name):
+            print(f"⏭️ Processed file already exists for {blob.name}")
             return True
         
         # Process the file
@@ -281,9 +309,9 @@ def process_folder(folder_path=None, height=None, recursive=True):
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Bulk process images in a bucket folder')
+    parser = argparse.ArgumentParser(description='Bulk process files in a bucket folder')
     parser.add_argument('--folder', type=str, help='Folder path to process (e.g., "2024/Photos")')
-    parser.add_argument('--height', type=int, help='Thumbnail height (default: 256)')
+    parser.add_argument('--height', type=int, help='Output height for processed files (default: 256)')
     parser.add_argument('--no-recursive', action='store_true', help='Do not process subfolders')
     
     args = parser.parse_args()
