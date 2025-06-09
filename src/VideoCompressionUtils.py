@@ -198,37 +198,101 @@ class VideoCompressionUtils:
         return thumb_local_path, thumbnail_time
     
     @classmethod
-    def build_ffmpeg_command(cls, signed_download_url, pipe_path, settings):
+    def build_ffmpeg_command(cls, signed_download_url, pipe_path, settings, output_format=None):
         """
         Build the FFmpeg command for video compression.
+        
+        Args:
+            signed_download_url: Signed URL to access the video file
+            pipe_path: Path to the named pipe for output
+            settings: Dictionary with compression settings
+            output_format: Output format (webm or mp4), defaults to VIDEO_OUTPUT_FORMAT
         """
-        return [
+        # Use the specified format or fall back to the default
+        format_type = output_format or VIDEO_OUTPUT_FORMAT
+        
+        # Common settings
+        command = [
             'ffmpeg', '-y', '-i', signed_download_url,
-            '-c:v', VIDEO_CODEC,
-            '-b:v', '0',
-            '-crf', str(settings['crf']),
-            '-g', '150',
-            '-keyint_min', '150',
             '-vf', f'scale=-2:{settings["resolution"]}',
-            '-c:a', AUDIO_CODEC,
-            '-ac', str(AUDIO_CHANNELS),
-            '-b:a', f'{settings["audio_bitrate"]}k',
-            '-index_correction', '1',
-            '-cluster_size_limit', '2M',
-            '-cluster_time_limit', '5000',
-            '-skip_threshold', '0',
-            '-f', 'webm',
-            pipe_path
         ]
+        
+        # Format-specific settings
+        if format_type == VIDEO_FORMAT_WEBM:
+            # WebM with VP9
+            command.extend([
+                '-c:v', WEBM_VIDEO_CODEC,
+                '-b:v', '0',
+                '-crf', str(settings['crf']),
+                '-g', str(VIDEO_KEYFRAME_INTERVAL),
+                '-keyint_min', str(VIDEO_KEYFRAME_INTERVAL),
+                '-c:a', WEBM_AUDIO_CODEC,
+                '-ac', str(WEBM_AUDIO_CHANNELS),
+                '-b:a', f'{settings["audio_bitrate"]}k',
+                # WebM container format settings for better seeking
+                '-index_correction', WEBM_INDEX_CORRECTION,
+                '-cluster_size_limit', WEBM_CLUSTER_SIZE_LIMIT,
+                '-cluster_time_limit', WEBM_CLUSTER_TIME_LIMIT,
+                '-skip_threshold', WEBM_SKIP_THRESHOLD,
+                '-f', 'webm'
+            ])
+        elif format_type == VIDEO_FORMAT_MP4:
+            # MP4 with H.265/HEVC - using MPEG-TS format for pipe output
+            # MP4 muxer doesn't support non-seekable output, so use TS format for the pipe
+            command.extend([
+                '-c:v', MP4_VIDEO_CODEC,
+                '-crf', str(settings['crf']),
+                '-preset', MP4_PRESET,
+                '-x265-params', MP4_X265_PARAMS,
+                '-c:a', MP4_AUDIO_CODEC,
+                '-ac', str(MP4_AUDIO_CHANNELS),
+                '-b:a', f'{settings["audio_bitrate"]}k',
+                '-f', 'mpegts'  # Use MPEG-TS format for pipe output which supports streaming
+            ])
+        elif format_type == VIDEO_FORMAT_TS:
+            # MPEG-TS with H.264/AVC
+            command.extend([
+                '-c:v', TS_VIDEO_CODEC,        # Use H.264 codec
+                '-crf', str(settings['crf']),
+                '-preset', TS_PRESET,
+                '-profile:v', TS_PROFILE,      # High profile for better quality
+                '-level', TS_LEVEL,            # Widely compatible level
+                '-tune', TS_TUNE,              # Film tuning for general content
+                '-x264-params', TS_X264_PARAMS,# Optimized encoding parameters
+                '-c:a', TS_AUDIO_CODEC,        # Use AAC audio
+                '-ac', str(TS_AUDIO_CHANNELS),
+                '-b:a', f'{settings["audio_bitrate"]}k',
+                '-movflags', '+faststart',     # Optimize for streaming
+                '-f', 'mpegts'                 # MPEG-TS format supports streaming
+            ])
+        else:
+            # Fallback to WebM if format is unknown
+            command.extend([
+                '-c:v', WEBM_VIDEO_CODEC,
+                '-b:v', '0',
+                '-crf', str(settings['crf']),
+                '-g', str(VIDEO_KEYFRAME_INTERVAL),
+                '-keyint_min', str(VIDEO_KEYFRAME_INTERVAL),
+                '-c:a', WEBM_AUDIO_CODEC,
+                '-ac', str(WEBM_AUDIO_CHANNELS),
+                '-b:a', f'{settings["audio_bitrate"]}k',
+                '-f', 'webm'
+            ])
+        
+        # Add output path
+        command.append(pipe_path)
+        
+        return command
     
     @classmethod
-    def create_upload_worker(cls, pipe_path, compressed_blob):
+    def create_upload_worker(cls, pipe_path, compressed_blob, output_format=None):
         """
         Create an upload worker function for streaming to GCS.
         
         Args:
             pipe_path: Path to the named pipe for input
             compressed_blob: GCS blob object for the output
+            output_format: Output format (webm, mp4, or ts), defaults to VIDEO_OUTPUT_FORMAT
             
         Returns:
             Tuple of (upload_worker_function, upload_success_event, upload_error_reference)
@@ -237,6 +301,9 @@ class VideoCompressionUtils:
         upload_success = threading.Event()
         upload_error = None
         
+        # Use the specified format or fall back to the default
+        format_type = output_format or VIDEO_OUTPUT_FORMAT
+        
         # Upload worker function - uses closure to access the variables
         def upload_worker():
             nonlocal upload_error
@@ -244,11 +311,18 @@ class VideoCompressionUtils:
                 print("Upload worker thread starting")
                 
                 # Get signed URL for direct upload
+                # Use the appropriate content type based on format
+                if format_type == VIDEO_FORMAT_MP4:
+                    content_type = "video/mp4"
+                elif format_type == VIDEO_FORMAT_TS:
+                    content_type = "video/mp2t"
+                else:
+                    content_type = "video/webm"
                 signed_url = compressed_blob.generate_signed_url(
                     version="v4",
                     expiration=datetime.datetime.utcnow() + datetime.timedelta(hours=1),
                     method="PUT",
-                    content_type="video/webm"
+                    content_type=content_type
                 )
                 
                 # Stream data from pipe to GCS
@@ -257,7 +331,7 @@ class VideoCompressionUtils:
                     response = requests.put(
                         signed_url,
                         data=pipe_file,
-                        headers={"Content-Type": "video/webm"}
+                        headers={"Content-Type": content_type}
                     )
                     
                     if response.status_code in (200, 201):
@@ -282,7 +356,14 @@ class VideoCompressionUtils:
         Returns:
             Path to the created named pipe
         """
-        pipe_path = tempfile.mktemp(suffix=".webm")
+        # Use the appropriate file extension based on format
+        if VIDEO_OUTPUT_FORMAT == VIDEO_FORMAT_MP4:
+            suffix = ".mp4"
+        elif VIDEO_OUTPUT_FORMAT == VIDEO_FORMAT_TS:
+            suffix = ".ts"
+        else:
+            suffix = ".webm"
+        pipe_path = tempfile.mktemp(suffix=suffix)
         try:
             os.mkfifo(pipe_path)
             print(f"Created named pipe at {pipe_path}")

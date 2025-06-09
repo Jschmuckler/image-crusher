@@ -153,8 +153,11 @@ class FileProcessor:
         content_type = file_info.get('content_type')
         print(f"Processing video: {file_name}, type: {content_type}")
         
-        # Prepare file paths
-        file_paths = cls._prepare_file_paths(file_name)
+        # Get output format from options or use default
+        output_format = options.get('output_format', VIDEO_OUTPUT_FORMAT)
+        
+        # Prepare file paths with the selected output format
+        file_paths = cls._prepare_file_paths(file_name, output_format)
         
         # Make sure directories exist in GCS
         cls._ensure_directory_exists(bucket, f"{file_paths['file_dir']}/{THUMBS_DIRECTORY}/")
@@ -221,12 +224,19 @@ class FileProcessor:
             
             # Setup GCS blob
             compressed_blob = bucket.blob(file_paths['compressed_path'])
-            compressed_blob.content_type = "video/webm"
+            # Set content type based on output format
+            if output_format == VIDEO_FORMAT_MP4:
+                compressed_blob.content_type = "video/mp4"
+            elif output_format == VIDEO_FORMAT_TS:
+                compressed_blob.content_type = "video/mp2t"
+            else:
+                compressed_blob.content_type = "video/webm"
             
             # Create upload worker
             upload_worker, upload_success, upload_error = VideoCompressionUtils.create_upload_worker(
                 pipe_path, 
-                compressed_blob
+                compressed_blob,
+                output_format
             )
             
             # Start upload thread
@@ -235,11 +245,15 @@ class FileProcessor:
             upload_thread.start()
             time.sleep(0.5)  # Ensure thread is ready
             
-            # Build FFmpeg command
+            # Get output format from options or use default
+            output_format = options.get('output_format', VIDEO_OUTPUT_FORMAT)
+            
+            # Build FFmpeg command with the specified output format
             compress_cmd = VideoCompressionUtils.build_ffmpeg_command(
                 signed_download_url, 
                 pipe_path, 
-                compression_settings
+                compression_settings,
+                output_format
             )
             
             # Start video compression
@@ -322,10 +336,11 @@ class FileProcessor:
             raise
     
     @classmethod
-    def _prepare_file_paths(cls, file_name):
+    def _prepare_file_paths(cls, file_name, output_format=None):
         """Prepare file paths for video processing.
         Args:
             file_name: Original file name
+            output_format: Output format (webm or mp4)
         Returns:
             Dictionary with various file paths
         """
@@ -337,9 +352,20 @@ class FileProcessor:
         thumb_dir = os.path.join(file_dir, THUMBS_DIRECTORY)
         compressed_dir = os.path.join(file_dir, COMPRESSED_DIRECTORY)
         
+        # Use the specified format or default
+        format_type = output_format or VIDEO_OUTPUT_FORMAT
+        
+        # Set file extension based on format
+        if format_type == VIDEO_FORMAT_MP4:
+            video_extension = "mp4"
+        elif format_type == VIDEO_FORMAT_TS:
+            video_extension = "ts"
+        else:
+            video_extension = "webm"
+        
         # Prepare file names
         thumbs_path = os.path.join(thumb_dir, f"{file_name_without_ext}.{IMAGE_OUTPUT_FORMAT}")
-        compressed_path = os.path.join(compressed_dir, f"{file_name_without_ext}.webm")
+        compressed_path = os.path.join(compressed_dir, f"{file_name_without_ext}.{video_extension}")
         
         return {
             'file_dir': file_dir,
