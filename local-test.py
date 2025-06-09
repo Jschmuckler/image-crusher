@@ -17,6 +17,8 @@ def main():
     parser.add_argument('--file-path', type=str, required=True, help='Path to the file in the bucket')
     parser.add_argument('--content-type', type=str, default='image/jpeg', help='Content type of the file')
     parser.add_argument('--port', type=int, default=8080, help='Port where the function is running')
+    parser.add_argument('--height', type=int, help='Output height for processed files')
+    parser.add_argument('--format', type=str, choices=['webm', 'ts'], help='Video output format (webm or ts)')
     args = parser.parse_args()
 
     # Format the CloudEvent
@@ -32,6 +34,16 @@ def main():
             "contentType": args.content_type
         }
     }
+    
+    # Add processing options if provided
+    if args.height or args.format:
+        event["data"]["options"] = {}
+        
+        if args.height:
+            event["data"]["options"]["height"] = args.height
+            
+        if args.format:
+            event["data"]["options"]["output_format"] = args.format
 
     # Send the request
     url = f"http://localhost:{args.port}"

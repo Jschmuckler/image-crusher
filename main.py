@@ -60,9 +60,10 @@ def process(cloud_event):
         print("No file name provided in event data")
         return
     
-    # Skip if it's already in any THUMBS directory
-    if "/THUMBS/" in file_name or file_name.endswith("/THUMBS") or "/THUMBS/" in file_name.upper():
-        print(f"Skipping {file_name}: in THUMBS directory")
+    # Skip if it's already in any THUMBS or COMPRESSED directory
+    if ("/THUMBS/" in file_name or file_name.endswith("/THUMBS") or "/THUMBS/" in file_name.upper() or
+        "/COMPRESSED/" in file_name or file_name.endswith("/COMPRESSED") or "/COMPRESSED/" in file_name.upper()):
+        print(f"Skipping {file_name}: in THUMBS or COMPRESSED directory")
         return
     
     print(f"Processing file: {file_name}")
@@ -123,20 +124,20 @@ def process(cloud_event):
         print(f"Error processing {file_name}: {str(e)}")
         raise
 
-if __name__ == "__main__":
+#if __name__ == "__main__":
     # For local testing
-    class MockEvent:
-        data = {"name": "test/image.jpg", "contentType": "image/jpeg"}
+#    class MockEvent:
+#        data = {"name": "test/image.jpg", "contentType": "image/jpeg"}
     
     # Test an image
-    print("Testing image processing:")
-    process(MockEvent())
+#    print("Testing image processing:")
+#    process(MockEvent())
     
     # Test a video (will raise NotImplementedError but shows it works)
-    try:
-        print("\nTesting video processing:")
-        video_event = MockEvent()
-        video_event.data = {"name": "test/video.mp4", "contentType": "video/mp4"}
-        process(video_event)
-    except NotImplementedError as e:
-        print(f"Expected error for video: {e}")
+#    try:
+#       print("\nTesting video processing:")
+#        video_event = MockEvent()
+#        video_event.data = {"name": "test/video.mp4", "contentType": "video/mp4"}
+#        process(video_event)
+#    except NotImplementedError as e:
+#        print(f"Expected error for video: {e}")
