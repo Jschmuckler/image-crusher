@@ -1,5 +1,5 @@
 # Use official Python slim image (smaller than standard)
-FROM python:3.11-slim
+FROM --platform=linux/amd64 python:3.11-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -33,11 +33,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
+# Verify FFmpeg is installed
 RUN ffmpeg -version
 
-# Set up Functions Framework
 ENV FUNCTION_TARGET=process
 ENV PORT=8080
 
-# Run the function directly
-CMD ["functions-framework", "--target=process", "--port=8080"]
+# Run the function using functions-framework
+CMD ["functions-framework", "--target=process", "--signature-type=http"]

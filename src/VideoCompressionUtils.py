@@ -213,7 +213,8 @@ class VideoCompressionUtils:
         
         # Common settings
         command = [
-            'ffmpeg', '-y', '-i', signed_download_url,
+            'ffmpeg', '-y', 
+            '-i', signed_download_url,
             '-vf', f'scale=-2:{settings["resolution"]}',
         ]
         
@@ -318,12 +319,52 @@ class VideoCompressionUtils:
                     content_type = "video/mp2t"
                 else:
                     content_type = "video/webm"
-                signed_url = compressed_blob.generate_signed_url(
-                    version="v4",
-                    expiration=datetime.datetime.utcnow() + datetime.timedelta(hours=1),
-                    method="PUT",
-                    content_type=content_type
-                )
+                # Get signed URL with token-based approach
+                try:
+                    # First try the standard approach
+                    signed_url = compressed_blob.generate_signed_url(
+                        version="v4",
+                        expiration=datetime.datetime.utcnow() + datetime.timedelta(hours=1),
+                        method="PUT",
+                        content_type=content_type
+                    )
+                except Exception as e:
+                    print(f"Standard signed URL generation failed: {str(e)}")
+                    print("Trying token-based approach...")
+                    
+                    # Import necessary modules
+                    import google.auth
+                    from google.auth.transport import requests as auth_requests
+                    
+                    # Get credentials from environment
+                    credentials, project_id = google.auth.default()
+                    
+                    # Refresh token
+                    auth_request = auth_requests.Request()
+                    credentials.refresh(auth_request)
+                    
+                    # Get service account email
+                    service_account_email = None
+                    if hasattr(credentials, "service_account_email"):
+                        service_account_email = credentials.service_account_email
+                    else:
+                        # If not available, get from environment
+                        import os
+                        service_account = os.environ.get('K_SERVICE_ACCOUNT', 
+                                                        'image-crusher-sa@personal-life-451815.iam.gserviceaccount.com')
+                        service_account_email = service_account
+                    
+                    print(f"Using service account for upload: {service_account_email}")
+                    
+                    # Generate signed URL with token
+                    signed_url = compressed_blob.generate_signed_url(
+                        version="v4",
+                        expiration=datetime.datetime.utcnow() + datetime.timedelta(hours=1),
+                        method="PUT",
+                        service_account_email=service_account_email,
+                        access_token=credentials.token,
+                        content_type=content_type
+                    )
                 
                 # Stream data from pipe to GCS
                 with open(pipe_path, 'rb') as pipe_file:

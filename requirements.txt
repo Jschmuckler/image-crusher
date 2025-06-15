@@ -5,3 +5,4 @@ google-auth-oauthlib==1.1.0
 Pillow==10.2.0
 requests==2.31.0
 google-resumable-media==2.7.0
+flask==2.3.3

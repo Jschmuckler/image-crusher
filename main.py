@@ -3,6 +3,8 @@ import tempfile
 import functions_framework
 from google.cloud import storage
 from src.FileProcessor import FileProcessor
+import flask
+from flask import Flask, jsonify
 
 # For bulk processing
 import RunBulk
@@ -21,6 +23,28 @@ storage_client = storage.Client(project=PROJECT_ID)
 print(f"Storage client initialized successfully")
 
 bucket = storage_client.bucket(BUCKET_NAME)
+
+# Define Flask app - this will be used for both functions-framework local testing and Cloud Run
+app = flask.Flask(__name__)
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint for Cloud Run."""
+    try:
+        # Try a simple storage operation to verify service account credentials
+        buckets = list(storage_client.list_buckets(max_results=1))
+        return jsonify({
+            "status": "healthy",
+            "project": PROJECT_ID,
+            "bucket": BUCKET_NAME,
+            "storage_client": "initialized",
+            "ffmpeg_available": os.system("which ffmpeg > /dev/null") == 0
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 500
 
 @functions_framework.cloud_event
 def process(cloud_event):
@@ -62,8 +86,9 @@ def process(cloud_event):
     
     # Skip if it's already in any THUMBS or COMPRESSED directory
     if ("/THUMBS/" in file_name or file_name.endswith("/THUMBS") or "/THUMBS/" in file_name.upper() or
-        "/COMPRESSED/" in file_name or file_name.endswith("/COMPRESSED") or "/COMPRESSED/" in file_name.upper()):
-        print(f"Skipping {file_name}: in THUMBS or COMPRESSED directory")
+        "/COMPRESSED/" in file_name or file_name.endswith("/COMPRESSED") or "/COMPRESSED/" in file_name.upper() or
+        file_name.endswith(".webp") or file_name.endswith(".ts")):
+        print(f"Skipping {file_name}: in THUMBS or COMPRESSED directory or already processed format")
         return
     
     print(f"Processing file: {file_name}")
@@ -105,9 +130,8 @@ def process(cloud_event):
             
             # Upload the processed file
             thumb_blob = bucket.blob(output_path)
+            thumb_blob.content_type = output_type 
             thumb_blob.upload_from_filename(processed_file)
-            thumb_blob.content_type = output_type
-            thumb_blob.patch()
             
             # Clean up temporary files
             os.remove(processed_file)
@@ -124,20 +148,85 @@ def process(cloud_event):
         print(f"Error processing {file_name}: {str(e)}")
         raise
 
-#if __name__ == "__main__":
-    # For local testing
-#    class MockEvent:
-#        data = {"name": "test/image.jpg", "contentType": "image/jpeg"}
+# HTTP function for Cloud Run
+@app.route('/', methods=['POST'])
+def http_handler():
+    """HTTP endpoint for Cloud Run, handles both direct HTTP requests and CloudEvents from Eventarc."""
+    # Check if this is a CloudEvent
+    content_type = flask.request.headers.get('Content-Type', '')
     
-    # Test an image
-#    print("Testing image processing:")
-#    process(MockEvent())
+    if 'application/cloudevents' in content_type:
+        # This is a CloudEvent from Eventarc
+        print("Received CloudEvent from Eventarc")
+        
+        # Parse the CloudEvent
+        try:
+            cloud_event = None
+            
+            if content_type == 'application/cloudevents+json':
+                # JSON formatted CloudEvent
+                cloud_event_data = flask.request.get_json()
+                
+                # Create a simple CloudEvent-like object
+                class SimpleCloudEvent:
+                    def __init__(self, data):
+                        self.data = data
+                
+                # Extract just the data portion we need
+                if 'data' in cloud_event_data:
+                    cloud_event = SimpleCloudEvent(cloud_event_data['data'])
+                else:
+                    return jsonify({"error": "Missing data field in CloudEvent"}), 400
+                
+            else:
+                # Binary mode CloudEvent
+                # Get CloudEvent data from HTTP headers
+                ce_id = flask.request.headers.get('ce-id')
+                ce_source = flask.request.headers.get('ce-source')
+                ce_type = flask.request.headers.get('ce-type')
+                
+                # Parse the data
+                data = flask.request.get_json()
+                
+                # Create a CloudEvent-like object
+                class SimpleCloudEvent:
+                    def __init__(self, data):
+                        self.data = data
+                
+                cloud_event = SimpleCloudEvent(data)
+            
+            # Process the CloudEvent
+            process(cloud_event)
+            return jsonify({"status": "success"}), 200
+            
+        except Exception as e:
+            print(f"Error processing CloudEvent: {str(e)}")
+            return jsonify({"error": str(e)}), 500
     
-    # Test a video (will raise NotImplementedError but shows it works)
-#    try:
-#       print("\nTesting video processing:")
-#        video_event = MockEvent()
-#        video_event.data = {"name": "test/video.mp4", "contentType": "video/mp4"}
-#        process(video_event)
-#    except NotImplementedError as e:
-#        print(f"Expected error for video: {e}")
+    else:
+        # This is a direct HTTP request, not a CloudEvent
+        print("Received direct HTTP request (not a CloudEvent)")
+        
+        try:
+            # Parse the request data
+            request_data = flask.request.get_json()
+            
+            # Create a CloudEvent-like object
+            class SimpleCloudEvent:
+                def __init__(self, data):
+                    self.data = data
+            
+            cloud_event = SimpleCloudEvent(request_data)
+            
+            # Process the request
+            process(cloud_event)
+            return jsonify({"status": "success"}), 200
+            
+        except Exception as e:
+            print(f"Error processing HTTP request: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    # For local development with Flask
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=True)

@@ -266,11 +266,19 @@ class FileProcessor:
                     stderr=subprocess.PIPE
                 )
                 
-                # Monitor progress
+                # Monitor progress but with minimal output
+                progress_update_interval = 10  # Only log progress every 10 seconds
+                last_update_time = time.time()
+                
                 while ffmpeg_process.poll() is None:
                     stderr_line = ffmpeg_process.stderr.readline().decode('utf-8', errors='replace')
-                    if stderr_line and 'frame=' in stderr_line:
+                    current_time = time.time()
+                    
+                    # Only log progress occasionally to reduce chattiness
+                    if stderr_line and 'frame=' in stderr_line and (current_time - last_update_time >= progress_update_interval):
                         print(f"FFmpeg progress: {stderr_line.strip()}")
+                        last_update_time = current_time
+                        
                     time.sleep(1)
                 
                 # Check for errors
@@ -387,25 +395,79 @@ class FileProcessor:
     @classmethod
     def _get_signed_url(cls, bucket, blob_name, method='read'):
         """Generate a signed URL for a blob with specified permissions."""
+        import google.auth
+        from google.auth.transport import requests as auth_requests
+        
         # Get the blob
         blob = bucket.blob(blob_name)
         
         # Set the expiration time for the URL (4 hours)
         expiration = datetime.datetime.utcnow() + datetime.timedelta(hours=4)
         
-        # Generate the signed URL
-        if method == 'read':
-            url = blob.generate_signed_url(
-                version='v4',
-                expiration=expiration,
-                method='GET'
-            )
-        elif method == 'write':
-            url = blob.generate_signed_url(
-                version='v4',
-                expiration=expiration,
-                method='PUT',
-                content_type=blob.content_type
-            )
-        
-        return url
+        try:
+            # First try to use default approach with built-in credentials
+            if method == 'read':
+                url = blob.generate_signed_url(
+                    version='v4',
+                    expiration=expiration,
+                    method='GET'
+                )
+            elif method == 'write':
+                url = blob.generate_signed_url(
+                    version='v4',
+                    expiration=expiration,
+                    method='PUT',
+                    content_type=blob.content_type
+                )
+            
+            return url
+            
+        except Exception as e:
+            print(f"Could not generate signed URL with default approach: {str(e)}")
+            print("Using token-based signing approach for Cloud Run")
+            
+            try:
+                # Get credentials from the environment
+                credentials, project_id = google.auth.default()
+                
+                # Perform a refresh request to get the access token
+                auth_request = auth_requests.Request()
+                credentials.refresh(auth_request)
+                
+                # Get service account email
+                service_account_email = None
+                if hasattr(credentials, "service_account_email"):
+                    service_account_email = credentials.service_account_email
+                else:
+                    # If not available, get it from the environment
+                    import os
+                    service_account = os.environ.get('K_SERVICE_ACCOUNT', 
+                                                     'image-crusher-sa@personal-life-451815.iam.gserviceaccount.com')
+                    service_account_email = service_account
+                    
+                print(f"Using service account email: {service_account_email}")
+                
+                # Generate signed URL with token
+                if method == 'read':
+                    url = blob.generate_signed_url(
+                        version='v4',
+                        expiration=expiration,
+                        method='GET',
+                        service_account_email=service_account_email,
+                        access_token=credentials.token
+                    )
+                elif method == 'write':
+                    url = blob.generate_signed_url(
+                        version='v4',
+                        expiration=expiration,
+                        method='PUT',
+                        service_account_email=service_account_email,
+                        access_token=credentials.token,
+                        content_type=blob.content_type
+                    )
+                
+                return url
+                
+            except Exception as token_error:
+                print(f"Error generating signed URL with token: {str(token_error)}")
+                raise
